@@ -1,0 +1,4 @@
+interface:
+  display_name: "Repair Codex Windows Plugins"
+  short_description: "Repair Codex Windows plugin drift"
+  default_prompt: "Use $repair-codex-windows-plugins to repair Codex Windows computer-use and Chrome plugin failures after an upgrade."
