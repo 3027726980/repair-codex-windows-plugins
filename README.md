@@ -1,25 +1,26 @@
 # Repair Codex Windows Plugins
 
-## 中文说明
+用于修复 Windows 上 Codex Desktop / CLI 升级或重启后 bundled 插件漂移的问题，重点覆盖 `computer-use@openai-bundled` 和 `chrome@openai-bundled`。
 
-这是一个用于 Windows 上 Codex Desktop / CLI 升级后快速修复 bundled 插件漂移问题的 Codex Skill。它主要处理以下问题：
+## 适用场景
 
-- `computer-use@openai-bundled` 无法运行
-- `chrome@openai-bundled` 无法运行
+- `computer-use@openai-bundled` 或 `chrome@openai-bundled` 无法加载
+- 每次重启 Codex 后插件又不可用
 - `codex plugin list` 找不到 `openai-bundled`
-- 本地 `openai-bundled` marketplace mirror 缺少 `.agents\plugins\marketplace.json`
-- Chrome native host 记录指向旧版本路径
-- Codex Desktop 日志出现 `missing-helper-path`、`native pipe startup failed`、`helper transport failure`
+- `openai-bundled` mirror 缺少 `.agents\plugins\marketplace.json`
+- Chrome cache 只有版本目录，缺少 `chrome\latest`
+- Chrome native host 指向旧的 `browser-client.mjs` 或 `extension-host.exe`
+- Desktop 日志出现 `missing-helper-path`、`native pipe startup failed` 或 `helper transport failure`
 
-## 安装方式
+## 安装
 
-将本仓库放到 Codex Skill 目录：
+安装到 Codex skill 目录：
 
 ```powershell
 git clone https://github.com/3027726980/repair-codex-windows-plugins.git "$env:USERPROFILE\.codex\skills\repair-codex-windows-plugins"
 ```
 
-如果你更偏好 Gitee：
+Gitee 镜像：
 
 ```powershell
 git clone https://gitee.com/LHF-gitee/repair-codex-windows-plugins.git "$env:USERPROFILE\.codex\skills\repair-codex-windows-plugins"
@@ -31,62 +32,75 @@ git clone https://gitee.com/LHF-gitee/repair-codex-windows-plugins.git "$env:USE
 powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\skills\repair-codex-windows-plugins\scripts\repair-codex-bundled-plugins.ps1"
 ```
 
-只验证、不修复：
+只验证当前状态：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\skills\repair-codex-windows-plugins\scripts\repair-codex-bundled-plugins.ps1" -StrictVerifyOnly
 ```
 
-## 修复内容
+## 修复逻辑
 
-脚本会优先定位已有的 `install-computer-use-local.ps1`，并复用现有的 Windows Codex fast patch 修复流程。它会检查并修复：
+wrapper 会先调用现有的 `install-computer-use-local.ps1` 作为 staging 修复器，重建临时 bundled marketplace 和 `computer-use` 本地兼容插件。
 
-- `openai-bundled` 本地 marketplace mirror
-- `computer-use@openai-bundled` 插件缓存
-- `chrome@openai-bundled` 插件缓存
-- `CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE=1`
-- `[features].computer_use = true`
-- `[windows].sandbox = 'unelevated'`
-- stale Chrome native-host entries
+随后 wrapper 会把修复后的 `openai-bundled` mirror 同步到持久路径：
+
+```text
+C:\Users\<you>\.codex\bundled-marketplaces\openai-bundled
+```
+
+并将 `config.toml` 中的 `[marketplaces.openai-bundled].source` 指向这个持久路径。这样普通重启不再依赖 `.codex\.tmp\bundled-marketplaces\openai-bundled`，避免 `.tmp` 被刷新或残缺后导致插件再次消失。
+
+wrapper 还会修复 Chrome 插件缓存形态：
+
+```text
+C:\Users\<you>\.codex\plugins\cache\openai-bundled\chrome\latest
+```
+
+`latest` 应该是指向当前 Chrome 插件版本目录的 Junction，并且里面必须存在：
+
+- `scripts\browser-client.mjs`
+- `extension-host\windows\x64\extension-host.exe`
 
 ## 验证标准
 
 修复后应满足：
 
+- `codex plugin list` 显示 `Marketplace openai-bundled`
+- `openai-bundled` marketplace 路径在 `.codex\bundled-marketplaces\openai-bundled`
 - `computer-use@openai-bundled` 为 `installed, enabled`
 - `chrome@openai-bundled` 为 `installed, enabled`
 - `codex sandbox "C:\Windows\System32\cmd.exe" /c echo OK` 返回 `OK`
-- helper transport 输出 `verification ok`
-- Codex Desktop 日志出现 `computer-use native pipe startup ready`
+- wrapper `-StrictVerifyOnly` 输出 `helper transport ok` 和 `strict verification ok`
 
-修复完成后，请完全退出并重新打开 Codex Desktop，让桌面端重新加载环境变量和插件路径。
+修复完成后，完全退出并重新打开 Codex Desktop，让桌面端重新加载用户环境变量和插件路径。
+
+## 常见问题
+
+### 为什么重启后又坏了？
+
+旧流程会把 `[marketplaces.openai-bundled].source` 指向 `.codex\.tmp\bundled-marketplaces\openai-bundled`。这个目录适合作为 staging mirror，但不适合作为长期来源，因为 Codex 重启、升级或 marketplace 同步时可能刷新它。
+
+本 skill 的 wrapper 会把最终来源迁移到 `.codex\bundled-marketplaces\openai-bundled`，从而减少每次重启后重新修复的情况。
+
+### 为什么不直接用 `install-computer-use-local.ps1 -StrictVerifyOnly`？
+
+旧脚本的 strict verifier 语义上期待 `.tmp` staging 路径。持久化后请使用本 skill 的 wrapper：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\skills\repair-codex-windows-plugins\scripts\repair-codex-bundled-plugins.ps1" -StrictVerifyOnly
+```
+
+### Chrome 报缺少 `latest` 怎么办？
+
+运行 wrapper。当前 CLI 可能只安装 Chrome 到版本目录，例如 `chrome\26.x.xxxxx`，但没有创建 `chrome\latest`。wrapper 会补齐这个 Junction 并验证关键文件存在。
 
 ## English
 
-This repository contains a Codex Skill for repairing Windows Codex bundled plugin drift after Codex Desktop or CLI upgrades. It is intended for issues such as:
+This Codex skill repairs Windows Codex bundled plugin drift after Desktop or CLI upgrades/restarts, especially for `computer-use@openai-bundled` and `chrome@openai-bundled`.
 
-- `computer-use@openai-bundled` cannot run
-- `chrome@openai-bundled` cannot run
-- `codex plugin list` does not show `openai-bundled`
-- the local `openai-bundled` marketplace mirror is missing `.agents\plugins\marketplace.json`
-- Chrome native host entries point to stale plugin paths
-- Codex Desktop logs show `missing-helper-path`, `native pipe startup failed`, or `helper transport failure`
+It rebuilds the bundled marketplace mirror, moves the final `openai-bundled` source out of `.codex\.tmp` into a persistent mirror under `.codex\bundled-marketplaces\openai-bundled`, repairs plugin cache shape, restores Chrome `latest`, and verifies plugin status, sandbox, and Computer Use helper transport.
 
-## Installation
-
-Clone this repository into your Codex skills directory:
-
-```powershell
-git clone https://github.com/3027726980/repair-codex-windows-plugins.git "$env:USERPROFILE\.codex\skills\repair-codex-windows-plugins"
-```
-
-Or use Gitee:
-
-```powershell
-git clone https://gitee.com/LHF-gitee/repair-codex-windows-plugins.git "$env:USERPROFILE\.codex\skills\repair-codex-windows-plugins"
-```
-
-## Quick Repair
+Quick repair:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\skills\repair-codex-windows-plugins\scripts\repair-codex-bundled-plugins.ps1"
@@ -98,26 +112,4 @@ Verify only:
 powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\skills\repair-codex-windows-plugins\scripts\repair-codex-bundled-plugins.ps1" -StrictVerifyOnly
 ```
 
-## What It Repairs
-
-The wrapper script locates the existing `install-computer-use-local.ps1` repair script and reuses the Windows Codex fast patch workflow. It checks and repairs:
-
-- the local `openai-bundled` marketplace mirror
-- `computer-use@openai-bundled` plugin cache
-- `chrome@openai-bundled` plugin cache
-- `CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE=1`
-- `[features].computer_use = true`
-- `[windows].sandbox = 'unelevated'`
-- stale Chrome native-host entries
-
-## Verification
-
-After repair:
-
-- `computer-use@openai-bundled` should be `installed, enabled`
-- `chrome@openai-bundled` should be `installed, enabled`
-- `codex sandbox "C:\Windows\System32\cmd.exe" /c echo OK` should return `OK`
-- helper transport should print `verification ok`
-- Codex Desktop logs should show `computer-use native pipe startup ready`
-
-Fully quit and reopen Codex Desktop after the repair so the app reloads environment variables and plugin paths.
+After repair, fully quit and reopen Codex Desktop so it reloads user environment variables and plugin paths.
